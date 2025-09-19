@@ -4,41 +4,28 @@ import numpy as np
 import matplotlib.patches as mpatches
 import statsmodels.api as sm
 import matplotlib as mpl
+import scipy.stats as st
+
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+import scipy.stats as st
 
 def plot_growth_vs_initial(summary, goal="sdgi_s", highlight_ids=None,
-                           start_year=2000, end_year=2024,region_to_color=None,
+                           start_year=2000, end_year=2024,
+                           region_to_color=None,
                            color_by_region=False,
                            region_to_code=None,
                            region_categories=None,
                            scale_by_population=True,
-                           show_weighted=False):
+                           show_weighted=False,
+                           show_confidence_bands=False):
     """
     Scatter plot of growth vs initial score for a given goal,
     bubble size = population in end_year,
-    with optional region coloring and weighted regression.
-
-    Parameters
-    ----------
-    summary : pd.DataFrame
-        Dataframe with *_start, *_rel_change, population, and region columns.
-    goal : str, default "sdgi_s"
-        Which goal/indicator to plot (e.g. "sdgi_s", "goal1", "goal5", etc.).
-    highlight_ids : list of str, optional
-        List of country IDs (ISO codes) to label.
-    start_year : int
-        The starting year used in summary.
-    end_year : int
-        The ending year used in summary.
-    color_by_region : bool, default False
-        If True, color points by region.
-    region_to_code : dict, optional
-        Mapping from region → numeric code (for stable coloring).
-    region_categories : list, optional
-        List of all region categories (for consistent legend order).
-    scale_by_population : bool, default True
-        If True, scale bubble sizes by population.
-    show_weighted : bool, default False
-        If True, also plot a population-weighted regression line.
+    with optional region coloring and regression confidence bands.
     """
 
     # Ensure population is numeric
@@ -61,18 +48,17 @@ def plot_growth_vs_initial(summary, goal="sdgi_s", highlight_ids=None,
     # --- Plot ---
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Scatter with optional region coloring
-    # Scatter with region coloring (pastel colors)
+    # Scatter with region coloring (pastel)
     if color_by_region and region_to_color is not None:
         colors = valid["region"].map(region_to_color)
         ax.scatter(x, y, s=sizes, c=colors, alpha=0.6, edgecolor="k")
 
-        # Legend: always use the same region→color mapping
+        # Legend: always use same region→color mapping
         region_patches = [
             mpatches.Patch(color=region_to_color[r], label=r) for r in region_categories
         ]
         region_legend = ax.legend(handles=region_patches, title="Region",
-                                loc="upper right", frameon=True)
+                                  loc="upper right", frameon=True)
         ax.add_artist(region_legend)
     else:
         ax.scatter(x, y, s=sizes, alpha=0.6, edgecolor="k")
@@ -85,34 +71,38 @@ def plot_growth_vs_initial(summary, goal="sdgi_s", highlight_ids=None,
                         summary.loc[cid, f"{goal}_rel_change"],
                         cid, fontsize=10, fontweight="bold")
 
-    # --- Unweighted fit ---
-    m, b = np.polyfit(x, y, 1)
+    # --- Unweighted OLS with confidence band ---
+    X = sm.add_constant(x)
+    ols_model = sm.OLS(y, X).fit()
+    m, b = ols_model.params[1], ols_model.params[0]
     xx = np.linspace(x.min(), x.max(), 200)
-    fit_line, = ax.plot(xx, m*xx + b, color="grey", linestyle="--", linewidth=2,
+    X_new = sm.add_constant(xx)
+    yhat = ols_model.predict(X_new)
+    fit_line, = ax.plot(xx, yhat, color="lightgray", linestyle="--", linewidth=2,
                         label=f"OLS: y={m:.3f}x+{b:.3f}")
 
-    # --- Weighted fit (optional) ---
     fit_handles = [fit_line]
+
+    if show_confidence_bands:
+        pred = ols_model.get_prediction(X_new)
+        ci_lower, ci_upper = pred.conf_int().T
+        ax.fill_between(xx, ci_lower, ci_upper, color="lightgray", alpha=0.3, label="95% CI (OLS)")
+
+    # --- Weighted OLS with confidence band ---
     if show_weighted:
-        X = sm.add_constant(x)
         wls_model = sm.WLS(y, X, weights=w).fit()
         m_w, b_w = wls_model.params[1], wls_model.params[0]
-        fit_weighted, = ax.plot(xx, m_w*xx + b_w, "c-.", linewidth=2,
-                                label=f"Weighted OLS: y={m_w:.3f}x+{b_w:.3f}")
+        yhat_w = wls_model.predict(X_new)
+        fit_weighted, = ax.plot(xx, yhat_w, "c-.", linewidth=2,
+                                label=f"WLS: y={m_w:.3f}x+{b_w:.3f}")
         fit_handles.append(fit_weighted)
 
-    # --- Legends ---
-    if color_by_region and region_to_color is not None:
-        region_patches = [
-            mpatches.Patch(color=region_to_color[r], label=r)
-            for r in region_categories
-        ]
-        region_legend = ax.legend(handles=region_patches, title="Region",
-                                loc="upper right", frameon=True)
-        ax.add_artist(region_legend)
+        if show_confidence_bands:
+            pred_w = wls_model.get_prediction(X_new)
+            ci_lower_w, ci_upper_w = pred_w.conf_int().T
+            ax.fill_between(xx, ci_lower_w, ci_upper_w, color="c", alpha=0.2, label="95% CI (WLS)")
 
-
-    # Fit legend (always shown)
+    # --- Fit legend ---
     ax.legend(handles=fit_handles, loc="lower right")
 
     # Labels
@@ -124,7 +114,6 @@ def plot_growth_vs_initial(summary, goal="sdgi_s", highlight_ids=None,
 
     ax.grid(True)
     plt.show()
-
 
 
 def build_summary(df, df_pop, start_year, end_year):
