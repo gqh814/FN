@@ -21,8 +21,7 @@ def plot_growth_vs_initial(summary, goal="sdgi_s", highlight_ids=None,
                            region_categories=None,
                            scale_by_population=True,
                            show_weighted=False,
-                           show_confidence_bands=False,
-                           ax = None):
+                           show_confidence_bands=False):
     """
     Scatter plot of growth vs initial score for a given goal,
     bubble size = population in end_year,
@@ -44,44 +43,22 @@ def plot_growth_vs_initial(summary, goal="sdgi_s", highlight_ids=None,
     if scale_by_population:
         sizes = (w / w.max()) * 800
     else:
-        sizes = np.full_like(x, 10)
+        sizes = np.full_like(x, 50)
 
     # --- Plot ---
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 6))
-
+    fig, ax = plt.subplots(figsize=(10, 6))
 
     # Scatter with region coloring (pastel)
     if color_by_region and region_to_color is not None:
         colors = valid["region"].map(region_to_color)
         ax.scatter(x, y, s=sizes, c=colors, alpha=0.6, edgecolor="k")
 
-        region_labels = {
-        "Africa": "Afrika",
-        "E_Euro_Asia": "Øst- og Centralasien",
-        "MENA": "Mellemøsten og Nordafrika",
-        "E_S_Asia": "Sydøstasien",
-        "W_Europe": "Vesteuropa",
-        "Americas": "Amerika",
-        "LAC": "Latinamerika",
-        "OECD": "OECD",
-        "Oceania": "Oceanien"
-        }
-
         # Legend: always use same region→color mapping
         region_patches = [
-            mpatches.Patch(
-                color=region_to_color[r],
-                label=region_labels.get(r, r)
-            )
-            for r in region_categories
+            mpatches.Patch(color=region_to_color[r], label=r) for r in region_categories
         ]
-        region_legend = ax.legend(
-            handles=region_patches,
-            title="Region",
-            loc="upper right",
-            frameon=True
-        )
+        region_legend = ax.legend(handles=region_patches, title="Region",
+                                  loc="upper right", frameon=True)
         ax.add_artist(region_legend)
     else:
         ax.scatter(x, y, s=sizes, alpha=0.6, edgecolor="k")
@@ -96,12 +73,12 @@ def plot_growth_vs_initial(summary, goal="sdgi_s", highlight_ids=None,
 
     # --- Unweighted OLS with confidence band ---
     X = sm.add_constant(x)
-    ols_model = sm.OLS(y, X).fit(cov_type="HC3")
+    ols_model = sm.OLS(y, X).fit()
     m, b = ols_model.params[1], ols_model.params[0]
     xx = np.linspace(x.min(), x.max(), 200)
     X_new = sm.add_constant(xx)
     yhat = ols_model.predict(X_new)
-    fit_line, = ax.plot(xx, yhat, color="gray", linestyle="--", linewidth=2,
+    fit_line, = ax.plot(xx, yhat, color="lightgray", linestyle="--", linewidth=2,
                         label=f"OLS: y={m:.3f}x+{b:.3f}")
 
     fit_handles = [fit_line]
@@ -109,11 +86,11 @@ def plot_growth_vs_initial(summary, goal="sdgi_s", highlight_ids=None,
     if show_confidence_bands:
         pred = ols_model.get_prediction(X_new)
         ci_lower, ci_upper = pred.conf_int().T
-        ax.fill_between(xx, ci_lower, ci_upper, color="gray", alpha=0.3, label="95% CI (OLS)")
+        ax.fill_between(xx, ci_lower, ci_upper, color="lightgray", alpha=0.3, label="95% CI (OLS)")
 
     # --- Weighted OLS with confidence band ---
     if show_weighted:
-        wls_model = sm.WLS(y, X, weights=w).fit(cov_type="HC3")
+        wls_model = sm.WLS(y, X, weights=w).fit()
         m_w, b_w = wls_model.params[1], wls_model.params[0]
         yhat_w = wls_model.predict(X_new)
         fit_weighted, = ax.plot(xx, yhat_w, "c-.", linewidth=2,
@@ -129,15 +106,14 @@ def plot_growth_vs_initial(summary, goal="sdgi_s", highlight_ids=None,
     ax.legend(handles=fit_handles, loc="lower right")
 
     # Labels
-    ax.set_xlabel(f"{goal.upper()} indeks (År {start_year})")
-    if goal == "sdgi_s":
-        ax.set_xlabel(f"SDG indeks (År {start_year})")
-        ax.set_ylabel(f"SDG vækst i procent-point ({start_year}–{end_year})")
-    else: 
-        ax.set_ylabel(f"{goal.upper()} vækst i procent-point ({start_year}–{end_year})")
-    ax.set_title(f"Boblestørrelse - Population i {end_year}")
+    ax.set_xlabel(f"{goal.upper()} Initial Score ({start_year})")
+    ax.set_ylabel(f"{goal.upper()} Growth ({start_year}–{end_year}) (percentage points)")
+    ax.set_title(f"{goal.upper()}: Growth vs Initial Score\n"
+                 f"Bubble size ∼ Population in {end_year}\n"
+                 f"Observations: {obs}")
+
     ax.grid(True)
-    #plt.show()
+    plt.show()
 
 
 def build_summary(df, df_pop, start_year, end_year):
@@ -187,44 +163,30 @@ def build_summary(df, df_pop, start_year, end_year):
 
     return summary
 
-
 def compute_fit(summary, goal="sdgi_s"):
     """
-    Compute slope and 95% CI for OLS (unweighted) and WLS (weighted by population).
+    Compute slope of growth vs initial score.
+    Returns unweighted and weighted slope estimates (WLS with population weights).
     """
+    # Drop missing
     valid = summary[[f"{goal}_start", f"{goal}_rel_change", "population"]].dropna()
+
+    # Ensure numeric
     valid["population"] = pd.to_numeric(valid["population"], errors="coerce")
 
     x = valid[f"{goal}_start"].to_numpy(dtype=float)
     y = valid[f"{goal}_rel_change"].to_numpy(dtype=float)
     w = valid["population"].to_numpy(dtype=float)
 
-    # --- OLS (robust SE) ---
+    # --- Unweighted fit (plain OLS with polyfit) ---
+    m_unw, _ = np.polyfit(x, y, 1)
+
+    # --- Weighted fit (WLS with population as weights) ---
     X = sm.add_constant(x)
-    ols = sm.OLS(y, X).fit(cov_type="HC3")
-    m_unw = ols.params[1]
+    wls_model = sm.WLS(y, X, weights=w).fit()
+    m_w = wls_model.params[1]  # slope
 
-    ci_ols = ols.conf_int(alpha=0.05)
-    # Håndter både DataFrame og ndarray
-    ci_ols_low, ci_ols_high = (ci_ols[1] if isinstance(ci_ols, np.ndarray)
-                               else ci_ols.iloc[1].values)
-
-    # --- WLS (robust SE) ---
-    wls = sm.WLS(y, X, weights=w).fit(cov_type="HC3")
-    m_w = wls.params[1]
-
-    ci_wls = wls.conf_int(alpha=0.05)
-    ci_wls_low, ci_wls_high = (ci_wls[1] if isinstance(ci_wls, np.ndarray)
-                               else ci_wls.iloc[1].values)
-
-    return {
-        "OLS": m_unw,
-        "OLS_CI_low": ci_ols_low,
-        "OLS_CI_high": ci_ols_high,
-        "WLS": m_w,
-        "WLS_CI_low": ci_wls_low,
-        "WLS_CI_high": ci_wls_high
-    }
+    return m_unw, m_w
 
 
 def build_summaries(df, df_pop, periods):
